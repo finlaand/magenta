@@ -44,6 +44,7 @@ typedef struct {
     mx_device_t device;
     mx_device_t* udev;
     mx_driver_t* driver;
+    block_callbacks_t* cb;
 
     uint32_t tag_send;      // next tag to send in CBW
     uint32_t tag_receive;   // next tag we expect to receive in CSW
@@ -95,6 +96,16 @@ typedef struct {
 static_assert(sizeof(ums_txn_extra_t) <= sizeof (iotxn_extra_data_t), "");
 
 static csw_status_t ums_verify_csw(ums_t* msd, iotxn_t* csw_request, uint32_t* out_residue);
+
+static mx_status_t constrain_args(ums_t* msd, mx_off_t offset, mx_off_t length) {
+    if (offset % msd->block_size) {
+        return ERR_INVALID_ARGS;
+    }
+    if (length % msd->block_size) {
+        return ERR_INVALID_ARGS;
+    }
+    return NO_ERROR;
+}
 
 static mx_status_t ums_reset(ums_t* msd) {
     // for all these control requests, data is null, length is 0 because nothing is passed back
@@ -518,18 +529,9 @@ static mx_status_t ums_release(mx_device_t* device) {
 static void ums_iotxn_queue(mx_device_t* dev, iotxn_t* txn) {
     ums_t* msd = get_ums(dev);
 
-    uint32_t block_size = msd->block_size;
-    // offset must be aligned to block size
-    if (txn->offset % block_size) {
-        DEBUG_PRINT(("UMS:offset on iotxn (%" PRIu64 ") not aligned to block size(%d)\n",
-                    txn->offset, block_size));
-        iotxn_complete(txn, ERR_INVALID_ARGS, 0);
-        return;
-    }
-    if (txn->length % block_size) {
-        DEBUG_PRINT(("UMS:length on iotxn (%" PRIu64 ") not aligned to block size(%d)\n",
-                    txn->length, block_size));
-        iotxn_complete(txn, ERR_INVALID_ARGS, 0);
+    mx_status_t status = constrain_args(msd, txn->offset, txn->length);
+    if (status != NO_ERROR) {
+        iotxn_complete(txn, status, 0);
         return;
     }
 
@@ -591,6 +593,65 @@ static mx_protocol_device_t ums_device_proto = {
     .release = ums_release,
     .iotxn_queue = ums_iotxn_queue,
     .get_size = ums_get_size,
+};
+
+static void msd_async_set_callbacks(mx_device_t* dev, block_callbacks_t* cb) {
+    ums_t* msd = get_ums(dev);
+    msd->cb = cb;
+}
+
+static void msd_async_complete(iotxn_t* txn, void* cookie) {
+    ums_t* msd = (ums_t*)txn->extra[0];
+    msd->cb->complete(cookie, txn->status);
+    iotxn_release(txn);
+}
+
+static void msd_async_read(mx_device_t* dev, mx_handle_t vmo, uint64_t length,
+                           uint64_t vmo_offset, uint64_t dev_offset, void* cookie) {
+    ums_t* msd = get_ums(dev);
+    iotxn_t* txn;
+    mx_status_t status = iotxn_alloc(&txn, IOTXN_ALLOC_POOL, 0);
+    if (status != NO_ERROR) {
+        msd->cb->complete(cookie, status);
+        return;
+    }
+    txn->opcode = IOTXN_OP_READ;
+    txn->offset = dev_offset;
+    txn->length = length;
+    txn->vmo_handle = vmo;
+    txn->vmo_offset = vmo_offset;
+    txn->vmo_length = length;
+    txn->complete_cb = msd_async_complete;
+    txn->cookie = cookie;
+    txn->extra[0] = (uintptr_t)msd;
+    ums_iotxn_queue(dev, txn);
+}
+
+static void msd_async_write(mx_device_t* dev, mx_handle_t vmo, uint64_t length,
+                            uint64_t vmo_offset, uint64_t dev_offset, void* cookie) {
+    ums_t* msd = get_ums(dev);
+    iotxn_t* txn;
+    mx_status_t status = iotxn_alloc(&txn, IOTXN_ALLOC_POOL, 0);
+    if (status != NO_ERROR) {
+        msd->cb->complete(cookie, status);
+        return;
+    }
+    txn->opcode = IOTXN_OP_WRITE;
+    txn->offset = dev_offset;
+    txn->length = length;
+    txn->vmo_handle = vmo;
+    txn->vmo_offset = vmo_offset;
+    txn->vmo_length = length;
+    txn->complete_cb = msd_async_complete;
+    txn->cookie = cookie;
+    txn->extra[0] = (uintptr_t)msd;
+    ums_iotxn_queue(dev, txn);
+}
+
+static block_ops_t msd_block_ops = {
+    .set_callbacks = msd_async_set_callbacks,
+    .read = msd_async_read,
+    .write = msd_async_write,
 };
 
 static int ums_worker_thread(void* arg) {
@@ -667,7 +728,8 @@ static int ums_worker_thread(void* arg) {
     DEBUG_PRINT(("UMS:block size is: 0x%08x\n", msd->block_size));
     DEBUG_PRINT(("UMS:total blocks is: %" PRId64 "\n", msd->total_blocks));
     DEBUG_PRINT(("UMS:total size is: %" PRId64 "\n", msd->total_blocks * msd->block_size));
-    msd->device.protocol_id = MX_PROTOCOL_BLOCK;
+    msd->device.protocol_id = MX_PROTOCOL_BLOCK_CORE;
+    msd->device.protocol_ops = &msd_block_ops;
     status = device_add(&msd->device, msd->udev);
     if (status != NO_ERROR) {
         printf("ums device_add failed: %d\n", status);
@@ -682,9 +744,12 @@ static int ums_worker_thread(void* arg) {
             mtx_unlock(&msd->iotxn_lock);
             return 0;
         }
-        completion_reset(&msd->iotxn_completion);
         iotxn_t* txn = list_remove_head_type(&msd->queued_iotxns, iotxn_t, node);
-        MX_DEBUG_ASSERT(txn != NULL);
+        if (txn == NULL) {
+            completion_reset(&msd->iotxn_completion);
+            mtx_unlock(&msd->iotxn_lock);
+            continue;
+        }
         msd->curr_txn = txn;
         mtx_unlock(&msd->iotxn_lock);
 
