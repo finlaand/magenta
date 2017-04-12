@@ -101,6 +101,9 @@ mx_status_t sys_port_queue(mx_handle_t handle, user_ptr<const void> _packet, siz
 }
 
 mx_status_t sys_port_wait2(mx_handle_t handle, mx_time_t deadline, user_ptr<void> _packet) {
+    if (deadline != 0 && deadline <= LK_SEC(1)) {
+        TRACEF("WARNING: Oddly short deadline %" PRIu64 "\n", deadline);
+    }
     auto up = ProcessDispatcher::GetCurrent();
 
     mxtl::RefPtr<PortDispatcherV2> port;
@@ -120,6 +123,9 @@ mx_status_t sys_port_wait2(mx_handle_t handle, mx_time_t deadline, user_ptr<void
 
 mx_status_t sys_port_wait(mx_handle_t handle, mx_time_t deadline,
                           user_ptr<void> _packet, size_t size) {
+    if (deadline != 0 && deadline <= LK_SEC(1)) {
+        TRACEF("WARNING: Oddly short deadline %" PRIu64 "\n", deadline);
+    }
     LTRACEF("handle %d\n", handle);
 
     if (!_packet)

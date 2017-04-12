@@ -37,6 +37,9 @@ mx_status_t sys_object_wait_one(mx_handle_t handle_value,
                                 mx_time_t deadline,
                                 user_ptr<mx_signals_t> _observed) {
     LTRACEF("handle %d\n", handle_value);
+    if (deadline != 0 && deadline <= LK_SEC(1)) {
+        TRACEF("WARNING: Oddly short deadline %" PRIu64 "\n", deadline);
+    }
 
     WaitEvent event;
 
@@ -89,6 +92,9 @@ mx_status_t sys_object_wait_one(mx_handle_t handle_value,
 
 mx_status_t sys_object_wait_many(user_ptr<mx_wait_item_t> _items, uint32_t count, mx_time_t deadline) {
     LTRACEF("count %u\n", count);
+    if (deadline != 0 && deadline <= LK_SEC(1)) {
+        TRACEF("WARNING: Oddly short deadline %" PRIu64 "\n", deadline);
+    }
 
     if (!count) {
         mx_status_t result = magenta_sleep(deadline);

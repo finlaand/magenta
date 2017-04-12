@@ -246,6 +246,10 @@ bool magenta_rights_check(const Handle* handle, mx_rights_t desired) {
 }
 
 mx_status_t magenta_sleep(mx_time_t deadline) {
+    if (deadline != 0 && deadline <= LK_SEC(1)) {
+        TRACEF("WARNING: Oddly short deadline %" PRIu64 "\n", deadline);
+    }
+
     /* sleep with interruptable flag set */
     return thread_sleep_etc(deadline, true);
 }
