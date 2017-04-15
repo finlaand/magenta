@@ -376,9 +376,15 @@ static void ums_queue_data_transfer(ums_t* msd, iotxn_t* txn, uint8_t ep_address
 static mx_status_t ums_read(ums_t* msd, iotxn_t* txn) {
     if (txn->length > UINT32_MAX) return ERR_INVALID_ARGS;
 
-    uint64_t lba = txn->offset/msd->block_size;
-    uint32_t num_blocks = txn->length/msd->block_size;
-    uint32_t transfer_length = txn->length;
+    uint64_t lba = txn->offset / msd->block_size;
+    if (lba >= msd->total_blocks) {
+        return 0;
+    }
+    uint32_t num_blocks = txn->length / msd->block_size;
+    if (lba + num_blocks >= msd->total_blocks) {
+        num_blocks = msd->total_blocks - lba;
+    }
+    uint32_t transfer_length = num_blocks * msd->block_size;
 
     // CBW Configuration
 
@@ -421,9 +427,15 @@ static mx_status_t ums_read(ums_t* msd, iotxn_t* txn) {
 static mx_status_t ums_write(ums_t* msd, iotxn_t* txn) {
     if (txn->length > UINT32_MAX) return ERR_INVALID_ARGS;
 
-    uint64_t lba = txn->offset/msd->block_size;
-    uint32_t num_blocks = txn->length/msd->block_size;
-    uint32_t transfer_length = txn->length;
+    uint64_t lba = txn->offset / msd->block_size;
+    if (lba >= msd->total_blocks) {
+        return 0;
+    }
+    uint32_t num_blocks = txn->length / msd->block_size;
+    if (lba + num_blocks >= msd->total_blocks) {
+        num_blocks = msd->total_blocks - lba;
+    }
+    uint32_t transfer_length = num_blocks * msd->block_size;
 
     if (msd->use_read_write_16) {
         scsi_command16_t command;
