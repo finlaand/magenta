@@ -9,7 +9,9 @@
 #include <string.h>
 #include <unistd.h>
 
+#include <block-client/client.h>
 #include <magenta/syscalls.h>
+#include <magenta/device/block.h>
 #include <magenta/device/ramdisk.h>
 
 uint64_t number(const char* str) {
@@ -127,14 +129,9 @@ int iotime_bread(int argc, char** argv) {
     size_t total = number(argv[3]);
     size_t bufsz = number(argv[4]);
 
-    if ((total % 4096) || (bufsz % 4096)) {
-        fprintf(stderr, "error: total and buffer size must be multiples of 4K\n");
-        return -1;
-    }
-
-    void* buffer = malloc(bufsz);
-    if (buffer == NULL) {
-        fprintf(stderr, "error: out of memory\n");
+    mx_handle_t vmo_handle;
+    if (mx_vmo_create(bufsz, 0, &vmo_handle) < 0) {
+        fprintf(stderr, "error; mx_vmo_create failed\n");
         return -1;
     }
 
@@ -151,7 +148,20 @@ int iotime_bread(int argc, char** argv) {
         }
     }
 
+    uint64_t block_size;
+    if (ioctl_block_get_size(fd, &block_size) < 0) {
+        fprintf(stderr, "error; ioctl_block_get_size failed\n");
+        close(fd);
+        return -1;
+    }
+
+    if ((total % block_size) || (bufsz % block_size)) {
+        fprintf(stderr, "error: total and buffer size must be multiples of %zu\n", block_size);
+        return -1;
+    }
+
     mx_time_t t0 = mx_time_get(MX_CLOCK_MONOTONIC);
+/*
     size_t n = total;
     while (n > 0) {
         size_t xfer = (n > bufsz) ? bufsz : n;
@@ -166,6 +176,7 @@ int iotime_bread(int argc, char** argv) {
         }
         n -= xfer;
     }
+*/
     mx_time_t t1 = mx_time_get(MX_CLOCK_MONOTONIC);
 
     fprintf(stderr, "read %zu bytes in %zu ns: ", total, t1 - t0);

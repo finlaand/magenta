@@ -10,6 +10,9 @@ MODULE_TYPE := userapp
 
 MODULE_SRCS += $(LOCAL_DIR)/iotime.c
 
+MODULE_STATIC_LIBS := \
+    system/ulib/block-client \
+
 MODULE_LIBS := \
     system/ulib/mxio \
     system/ulib/magenta \
